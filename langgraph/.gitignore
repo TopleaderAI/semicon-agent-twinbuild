@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# .NET
+bin/
+obj/
+
+# Secrets
+.env
