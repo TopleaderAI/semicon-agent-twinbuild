@@ -11,3 +11,7 @@ obj/
 .env
 # LangGraph checkpointer local state
 *.sqlite
+
+# MAF session state (LangGraph *.sqlite 대응)
+maf/**/sessions/
+maf/**/hitl_pending.json
