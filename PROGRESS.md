@@ -34,3 +34,41 @@
 - **다음 할 일**:
   - [ ] 개념 매핑 문서 v0.1 작성 (docs/) — Week 1 마지막 항목
   - [ ] Week 2 착수: LangGraph checkpointer(SQLite) + interrupt
+
+### 2026-07-12 (Week 2 — LangGraph 트랙: checkpointer + HITL 완료)
+
+- **완료**:
+  - `checkpoint_agent.py`: SqliteSaver 주입, thread_id 세션 키로 프로세스 재시작 후
+    대화 상태 복원 확인 (재실행 → 복원 메시지 수 검증)
+  - `hitl_agent.py`: interrupt 승인 게이트 — 승인 대기 → 사람 응답 → Command(resume=) 재개
+    E2E 동작 (mock 뉴스 3건 요약 + 시그널 판정 → approve 플로우)
+  - `llm_factory.py`: AGENT_PROVIDER 스위치 (Anthropic 직결 / OpenRouter 경유),
+    그래프 코드는 BaseChatModel 인터페이스 의존이라 무변경
+  - 진단 스크립트 2종: `inspect_last_run.py` (checkpointer DB 트레이스 덤프),
+    `tool_probe.py` (모델 tool calling 1회 프로브)
+  - `.gitignore`에 `*.sqlite` 추가, 커밋 6개 분리 푸시 (하나의 커밋 = 하나의 의도)
+- **결정**:
+  - Anthropic 크레딧 급소진 → 개발 LLM을 OpenRouter(`deepseek/deepseek-chat-v3.1`)로 전환.
+    공식 `langchain-openrouter` 패키지 채택 (ChatOpenAI base_url 우회법 대신)
+  - deepseek의 툴 호출 비일관성 대응: temperature=0 + 프롬프트 강화(soft)에 더해
+    첫 턴 `tool_choice="any"` 강제(hard) — ToolMessage 유무로 강제/일반 모델 분기
+    (무한 툴 루프 방지)
+  - 크레딧 소진 원인은 Console Usage에서 추후 확인 필요 (키 로테이션 검토 항목 유지)
+- **발견 (§5 매핑 v0.2 반영 대기)**:
+  - interrupt는 checkpointer가 전제조건 — LangGraph HITL은 "영속화의 응용 기능"
+  - 재개 시 노드는 처음부터 재실행 (노드 단위 replay) — interrupt 이전 코드는 멱등 필수,
+    .NET async/await식 지점 재개가 아님
+  - 프롬프트 유도 vs 구조 강제: 루프를 그래프가 소유하므로 "첫 턴은 반드시 툴" 같은
+    규칙을 상태 검사 + tool_choice로 코드 수준에서 보장 가능.
+    MAF 대응물은 Middleware에서 ChatOptions 조작으로 추정 (Week 2 MAF에서 검증)
+  - checkpointer DB가 곧 디버깅 자산 — 재실행(과금) 없이 사후 트레이스 분석 가능
+- **백로그**:
+  - HITL 게이트 진입 조건 강화 — 시그널 판정 유무 검증 후 interrupt (Week 5)
+  - Analyst 판정 출력을 structured output 스키마로 승격 (뉴스별 판정 + 종합)
+  - Ollama provider 스위치 추가 (Phase 2 실데이터 반복 실행 시 비용 절감용)
+- **다음 할 일**:
+  - [ ] MAF: AgentThread 세션 상태 지속 (checkpoint_agent 대응물) — 착수 시 API 공식 문서 검증 선행
+  - [ ] MAF: 승인(HITL) 플로우 — §2 "소유권 비대칭" 가설 검증
+  - [ ] 조건부 분기 3-way (시그널 강/중/약) 양쪽 구현
+  - [ ] 매핑 문서 v0.2 작성 (상태 지속 / HITL / 분기 + 위 발견 3건)
+  - [ ] Anthropic Console Usage에서 크레딧 소진 원인 확인 + 필요 시 키 로테이션
