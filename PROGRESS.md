@@ -15,8 +15,7 @@
   - [ ] MAF Hello Agent (동일 스펙) → Week 1 DoD 완료
   - [ ] 개념 매핑 문서 v0.1: 툴 정의 방식 비교 (@tool vs AIFunctionFactory)
     + create_react_agent deprecation 노트
-	
-	
+
 ### 2026-07-10 (Week 1 — MAF Hello Agent, DoD 달성)
 
 - **완료**:
@@ -72,3 +71,52 @@
   - [ ] 조건부 분기 3-way (시그널 강/중/약) 양쪽 구현
   - [ ] 매핑 문서 v0.2 작성 (상태 지속 / HITL / 분기 + 위 발견 3건)
   - [ ] Anthropic Console Usage에서 크레딧 소진 원인 확인 + 필요 시 키 로테이션
+
+### 2026-07-12 (Week 2 — MAF 트랙: AgentSession 지속 + HITL 완료)
+
+- **완료**:
+  - `maf/SessionAgent`: AgentSession 직렬화/복원으로 프로세스 재시작 후 대화 상태 지속
+    (checkpoint_agent.py 대응). 세션 키 = 파일명, 매 턴 직후 SerializeSessionAsync → JSON 저장.
+    재실행 시 "복원된 메시지 수: 4" 확인 — 툴 호출/결과 쌍까지 통째 직렬화됨
+  - `maf/HitlAgent`: ApprovalRequiredAIFunction 승인 게이트 E2E (hitl_agent.py 대응).
+    승인 대기 → Y/n → CreateResponse(bool) 회신 → 같은 세션으로 재개
+  - `maf/Shared/LlmFactory`: AGENT_PROVIDER 스위치 (openrouter 기본 / anthropic) —
+    llm_factory.py 대응. OpenRouter는 OpenAI 커넥터 + Endpoint 오버라이드
+    (공식 1.13.0 샘플 Agent_With_AzureFoundryModel 패턴)
+  - **Week 2 DoD 코드 파트 달성**: "승인 대기 → 사람 응답 → 재개"가 양쪽 프레임워크에서 동작
+    (문서 파트인 매핑 문서 v0.2는 잔여 — 완성 시 Week 2 DoD 최종 충족)
+- **결정**:
+  - Anthropic 크레딧 소진으로 MAF 트랙도 OpenRouter 전환 (LangGraph 트랙과 대칭 구조)
+  - 디버그용 ClientResultException 래퍼(GetRawResponse로 400 body 노출)는 상시 유지 —
+    tool_probe.py ↔ "PowerShell 프로브 + GetRawResponse" 격리 패턴 대응
+  - `.gitignore`에 `maf/**/sessions/`, `maf/**/hitl_pending.json` 추가 (*.sqlite 대응물)
+- **발견 (§5 매핑 v0.2 반영 대기)**:
+  - **API 리네임 2건 (dotnet-1.13.0 태그 소스로 검증)**: AgentThread → AgentSession
+    (GetNewThread → CreateSessionAsync, RunAsync 파라미터 thread → session, 1.0 GA),
+    FunctionApprovalRequestContent → ToolApprovalRequestContent (공식 샘플
+    Agent_Step04 기준). 2025년 블로그/튜토리얼 대부분 구 API — create_react_agent
+    deprecation과 같은 "구 튜토리얼 함정" 계열
+  - HITL 영속화 비대칭은 "가능/불가능"이 아니라 **"내장/opt-in"**: LangGraph는
+    interrupt가 checkpointer 전제라 대기 상태 영속화가 공짜, MAF는 승인 대기 중
+    세션 직렬화→복원→재개가 가능하되(이슈 #1318은 1.13.0에서 해소 확인) 직렬화
+    시점을 호출자가 소유
+  - 승인의 형태 차이: LangGraph는 interrupt payload 자유 구성(그래프 노드 모양),
+    MAF는 툴 호출 인자가 곧 승인 대상(툴 모양) — 임의 지점 승인은 그 지점을
+    "승인 필요 툴"로 승격해야 함 (SubmitSignalJudgment 패턴)
+  - MAF 툴 루프의 실소유자는 MEAI 계층의 FunctionInvokingChatClient (스택 트레이스
+    실증) — §2 "런타임 내장"을 "MEAI 데코레이터 체인"으로 정밀화
+  - deepseek이 MAF+OpenAI 호환 경로에서는 프롬프트만으로 툴 2개 순차 호출 성공
+    (LangGraph에서는 tool_choice="any" 강제 필요했음). 단 n=1이라 결론 유보 —
+    재발 시 ChatOptions.ToolMode 미들웨어 실험
+  - 운영 풋건: AGENT_MODEL을 두 공급자가 공유해 공급자 전환 시 모델 네임스페이스
+    불일치로 400 발생 (잔존 세션 env var가 원인이었음)
+- **백로그**:
+  - LlmFactory에 provider/model 네임스페이스 가드 추가 (openrouter인데 '/' 없는
+    모델명이면 요청 전 fail-fast) — LangGraph llm_factory.py에도 대칭 적용
+- **다음 할 일**:
+  - [ ] 커밋 4개 분리 푸시: ① chore: ignore MAF runtime session state
+        ② feat(maf): LlmFactory ③ feat(maf): SessionAgent ④ feat(maf): HitlAgent
+  - [ ] 조건부 분기 3-way (시그널 강/중/약): LangGraph conditional edges ↔
+        MAF **Workflow** 첫 대면 (착수 시 Workflow API 공식 문서/태그 소스 검증 선행)
+  - [ ] 매핑 문서 v0.2 작성: 상태 지속 / HITL / 분기 + 위 발견 반영
+        (§5 표의 "AgentThread" 표기도 AgentSession으로 수정)
