@@ -9,3 +9,5 @@ obj/
 
 # Secrets
 .env
+# LangGraph checkpointer local state
+*.sqlite
