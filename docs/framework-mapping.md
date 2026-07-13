@@ -4,7 +4,7 @@
 > 출퇴근 20분 학습 자료 겸용. `PROJECT_KNOWLEDGE.md` §5의 확장판.
 >
 > - **v0.1** (2026-07-10): 툴 정의 / 툴 실행 루프 비교 (Week 1)
-> - v0.2 (예정): 상태 지속(checkpointer ↔ AgentThread) / HITL / 조건부 분기 (Week 2)
+> - **v0.2** (2026-07-13): 상태 지속(Checkpointer ↔ AgentSession) / HITL / 조건부 분기 (Week 2)
 
 ---
 
@@ -12,10 +12,11 @@
 
 | | LangGraph 트랙 | MAF 트랙 |
 |---|---|---|
-| 언어/런타임 | Python 3.12 (uv) | .NET 8 |
-| 코어 패키지 | `langgraph` v1.x | `Microsoft.Agents.AI` 1.x (stable) |
-| LLM 커넥터 | `langchain-anthropic` | `Microsoft.Agents.AI.Anthropic` (**prerelease**) |
-| LLM | Claude API (개발: haiku / 시연: sonnet) | 동일 |
+| 언어/런타임 | Python 3.12 (uv) | .NET (net10.0) |
+| 코어 패키지 | `langgraph` v1.x | `Microsoft.Agents.AI` 1.13.0 (stable), `Microsoft.Agents.AI.Workflows` 1.13.0 (**stable**) |
+| LLM 커넥터 | `langchain-openrouter` (기본) / `langchain-anthropic` | OpenAI 커넥터 + Endpoint 오버라이드 (기본) / `Microsoft.Agents.AI.Anthropic` (**prerelease**) |
+| LLM | OpenRouter `deepseek/deepseek-chat-v3.1` (개발) / Claude (크레딧 복구 시) | 동일 |
+| MAF API 검증 기준 | — | 공식 리포 `dotnet-1.13.0` 태그 sparse-clone |
 
 ---
 
@@ -134,9 +135,22 @@ Console.WriteLine(await agent.RunAsync(userInput));
 ### 3.2 MAF: 커넥터 안정성 경계
 
 - 코어 `Microsoft.Agents.AI`: **1.0 GA (stable)** — 여기까지만 코어 의존
+- `Microsoft.Agents.AI.Workflows`: **stable** (1.13.0) — §7의 Workflow 분기도 stable 표면 안
 - `Microsoft.Agents.AI.Anthropic`: **prerelease** — LLM 커넥터 계층에 격리
 - 커넥터 API 표면이 아직 흔들림 (예: `APIKey` / `ApiKey` 프로퍼티 표기가
   문서 소스마다 상이) — 컴파일 에러 시 IntelliSense 기준으로 수정
+
+### 3.3 MAF: 1.0 GA 리네임 함정 (dotnet-1.13.0 태그 소스로 검증)
+
+`create_react_agent` deprecation과 같은 "구 튜토리얼 함정" 계열.
+2025년 블로그/튜토리얼 대부분이 구 API를 사용한다.
+
+| 구 API (2025 문서) | 현행 API (1.0 GA / 1.13.0) |
+|---|---|
+| `AgentThread` | `AgentSession` |
+| `agent.GetNewThread()` | `await agent.CreateSessionAsync()` |
+| `RunAsync(..., thread)` | `RunAsync(..., session)` |
+| `FunctionApprovalRequestContent` | `ToolApprovalRequestContent` |
 
 ---
 
@@ -150,8 +164,192 @@ Console.WriteLine(await agent.RunAsync(userInput));
 
 ---
 
-## v0.2 예정 (Week 2)
+## 5. 상태 지속 — Checkpointer ↔ AgentSession 직렬화
 
-- [ ] 상태 지속: `Checkpointer`(SQLite) ↔ `AgentThread` 직렬화
-- [ ] HITL: `interrupt` ↔ MAF 승인 플로우 — §2의 "소유권 비대칭" 가설 검증
-- [ ] 조건부 분기: conditional edges ↔ Workflow 분기 (시그널 강/중/약 3-way)
+**핵심 비대칭: 내장 vs opt-in.** 양쪽 모두 "세션 키로 대화 상태를 프로세스 재시작
+너머로 지속"이 가능하다. 다른 것은 **저장을 누가, 언제 하는가**.
+
+### LangGraph — compile 시점에 주입하면 이후는 자동
+
+```python
+conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
+graph = builder.compile(checkpointer=SqliteSaver(conn))
+
+config = {"configurable": {"thread_id": thread_id}}   # thread_id = 세션 키
+graph.invoke({"messages": [("user", user_input)]}, config)
+# 매 super-step마다 SqliteSaver가 자동 스냅샷 — 호출측 저장 코드 없음
+```
+
+- 저장 시점을 프레임워크가 소유: 그래프의 **매 super-step**마다 기록
+- 복원도 암묵적: 같은 `thread_id`로 invoke하면 이전 상태 위에서 이어짐
+- 부산물: checkpointer DB가 곧 **사후 트레이스 자산** (재실행 없이 디버깅)
+
+### MAF — 직렬화 시점을 호출자가 소유
+
+```csharp
+// 복원: 파일이 있으면 Deserialize, 없으면 새 세션
+session = File.Exists(sessionPath)
+    ? await agent.DeserializeSessionAsync(state)
+    : await agent.CreateSessionAsync();
+
+AgentResponse response = await agent.RunAsync(input, session);
+
+// 저장: 매 턴 직후 '호출자가' 스냅샷 — 프레임워크는 저장하지 않는다
+JsonElement serialized = await agent.SerializeSessionAsync(session);
+File.WriteAllText(sessionPath, JsonSerializer.Serialize(serialized));
+```
+
+- 직렬화 결과는 툴 호출/결과 쌍까지 포함한 JSON (복원 후 메시지 수로 검증)
+- 저장소 선택 자유 (파일/DB/Redis) — 대신 저장 누락도 호출자 책임
+
+### 대응표
+
+| 관점 | LangGraph | MAF |
+|---|---|---|
+| 세션 키 | `thread_id` (config) | 직렬화 저장 키 (파일명 등, 호출자 정의) |
+| 저장 시점 | 매 super-step 자동 | 호출자가 명시적으로 (`SerializeSessionAsync`) |
+| 복원 | 같은 thread_id로 invoke | `DeserializeSessionAsync` 명시 호출 |
+| 저장소 | Saver 구현체 (SQLite/Postgres/...) | 임의 (JSON을 어디 두든 자유) |
+| .NET 감각 | EF SaveChanges 자동 호출에 가까움 | `ISession` + 수동 커밋 |
+
+---
+
+## 6. HITL — interrupt ↔ ApprovalRequiredAIFunction
+
+**핵심 비대칭: 승인의 '모양'이 다르다.** §2의 "제어 흐름 소유권" 차이가 그대로
+기능 구현 방식 차이로 이어진 첫 사례 (Week 1 가설 검증 완료).
+
+- LangGraph: HITL이 **그래프 노드 모양** — 임의 지점에 `interrupt()`를 꽂는다
+- MAF: HITL이 **툴 모양** — "승인 필요 툴"로 모델링. 임의 지점 승인이 필요하면
+  그 지점을 툴로 승격해야 한다 (`SubmitSignalJudgment` 패턴)
+
+### LangGraph — 노드 안의 interrupt
+
+```python
+def approval_node(state: MessagesState) -> dict:
+    decision = interrupt({"question": "승인하시겠습니까?", "analysis": ...})
+    # Command(resume=값) 재개 시, 그 값이 interrupt()의 반환값이 된다
+    ...
+
+# 호출측
+result = graph.invoke({...}, config)          # interrupt에서 멈춤
+pending = result["__interrupt__"][0].value    # payload 수신
+result = graph.invoke(Command(resume=answer), config)  # 재개
+```
+
+- **interrupt는 checkpointer가 전제조건** — 멈춘 상태를 저장할 곳이 필요하므로.
+  즉 LangGraph HITL은 "영속화의 응용 기능"이고, 대기 상태 영속화가 공짜
+- **재개는 노드 단위 replay**: 멈춘 줄이 아니라 노드 처음부터 재실행된다.
+  interrupt 이전 코드는 멱등 필수 — .NET async/await식 지점 재개가 아님
+- payload는 자유 구성 (dict 아무거나)
+
+### MAF — 승인 필요 툴 + 응답 컨텐츠
+
+```csharp
+AIFunction submitTool = new ApprovalRequiredAIFunction(
+    AIFunctionFactory.Create(SubmitSignalJudgment));
+
+AgentResponse response = await agent.RunAsync(query, session);
+// 응답 Contents에 ToolApprovalRequestContent 포함 = interrupt payload 대응
+
+var reply = new ChatMessage(ChatRole.User, [request.CreateResponse(approved)]);
+response = await agent.RunAsync([reply], session);   // 같은 세션으로 재개
+```
+
+- 승인 대상 = **툴 호출 인자** (payload를 자유 구성하는 게 아니라 함수 시그니처가 스키마)
+- 대기 상태 영속화는 §5와 같은 opt-in: 승인 대기 중 세션을 직렬화→복원→재개 가능
+  (과거 이슈 #1318의 NotSupportedException은 1.13.0에서 해소 확인).
+  즉 비대칭은 "가능/불가능"이 아니라 **"내장/opt-in"**
+- 루프 재개 방식이 다르므로 멱등성 이슈 자체가 없음 — 대기·재개가
+  메시지 교환(요청 컨텐츠 ↔ 응답 컨텐츠)으로 표현된다
+
+### 대응표
+
+| 관점 | LangGraph | MAF |
+|---|---|---|
+| 승인 지점 | 임의 노드 (`interrupt()`) | 승인 필요 툴 (지점을 툴로 승격) |
+| payload | 자유 구성 dict | 툴 호출 인자 (함수 시그니처 = 스키마) |
+| 대기 신호 | `result["__interrupt__"]` | `ToolApprovalRequestContent` in Contents |
+| 재개 | `Command(resume=값)` → interrupt 반환값 | `CreateResponse(bool)` 유저 메시지 회신 |
+| 대기 영속화 | checkpointer 내장 (공짜) | 세션 직렬화 opt-in (호출자 소유) |
+| 재개 단위 | 노드 replay (멱등 필수) | 메시지 교환 (replay 없음) |
+
+---
+
+## 7. 조건부 분기 — conditional edges ↔ Workflow AddSwitch
+
+3-way(강/중/약) 시그널 라우팅. MAF 쪽은 **Workflow 첫 대면** — §2에서 예고한
+"StateGraph의 진짜 대응물"이며, `Microsoft.Agents.AI.Workflows`가 **stable**
+패키지라 §7(안정성 경계) 규칙 안에서 사용 가능함을 확인.
+
+### LangGraph — 라우터 함수가 state를 읽는다
+
+```python
+builder.add_conditional_edges(
+    "judge",
+    route_by_strength,   # (state) -> "strong" | "medium" | "weak"
+    {"strong": "strong", "medium": "medium", "weak": "weak"},
+)
+
+def route_by_strength(state: SignalState) -> Literal["strong", "medium", "weak"]:
+    s = state["strength"]
+    return s if s in ("strong", "medium", "weak") else "medium"  # else = 코드 컨벤션
+```
+
+### MAF — 조건이 '직전 executor의 반환 메시지'를 받는다
+
+```csharp
+var workflow = new WorkflowBuilder(judge)
+    .AddSwitch(judge, sw => sw
+        .AddCase(Is(SignalStrength.Strong), strong)
+        .AddCase(Is(SignalStrength.Weak), weak)
+        .WithDefault(medium))            // default가 빌더 API 수준에서 강제됨
+    .WithOutputFrom(strong, medium, weak)
+    .Build();
+
+static Func<object?, bool> Is(SignalStrength expected) =>
+    msg => msg is SignalJudgment j && j.Strength == expected;
+```
+
+### 대응표
+
+| 관점 | LangGraph | MAF |
+|---|---|---|
+| 분기 API | `add_conditional_edges(라우터, path_map)` | `AddSwitch(sw => AddCase/WithDefault)` |
+| 조건의 입력 | **누적 state** (그래프 전체 공유) | **직전 executor의 반환 메시지** (typed) |
+| 상태 공유 | 기본값 (모든 노드가 state 공유) | opt-in (`QueueStateUpdateAsync`/`ReadStateAsync`, scoped) |
+| default 분기 | 라우터 함수의 else (코드 컨벤션) | `WithDefault` (빌더 API가 구조적으로 강제) |
+| 노드 단위 | 함수 (`(state) -> dict`) | `Executor<TIn, TOut>` 클래스 (`HandleAsync` 오버라이드) |
+| 실행 | `graph.invoke(...)` | `InProcessExecution.RunStreamingAsync` + 이벤트 스트림 |
+| .NET 감각 | switch문을 함수로 뺀 것 | TPL Dataflow의 typed 메시지 파이프라인에 가까움 |
+
+**패턴 노트 (양쪽 공통 채택)**: 공식 MAF 샘플은 분기 판정에 structured output
+(`ChatResponseFormat.ForJsonSchema<T>()`)을 쓰지만 Azure OpenAI 전제.
+OpenRouter+deepseek 경로에서는 json_schema strict 모드 통과가 불확실하므로
+**프롬프트 JSON 강제 + 방어적 파싱 + 파싱 실패 시 default 분기**로 통일 —
+LangGraph 라우터의 else ↔ MAF `WithDefault`가 정확히 대칭이 되는 부수 효과.
+(실측: deepseek/deepseek-chat-v3.1, temperature=0에서 양쪽 모두 1회차에
+유효 JSON 반환. 툴 호출 비일관성과 달리 JSON 출력은 안정적 경향 — n 작음, 관찰 지속)
+
+---
+
+## 8. §2 정밀화 — MAF 툴 루프의 실소유자
+
+Week 2 스택 트레이스 실증: MAF 에이전트의 툴 반복 루프를 실제로 소유하는 것은
+MAF 자체가 아니라 **MEAI(`Microsoft.Extensions.AI`) 계층의
+`FunctionInvokingChatClient`** 데코레이터다.
+
+- §2의 "루프를 런타임이 소유"를 "MEAI 데코레이터 체인이 소유"로 정밀화
+- 시사점: `AIAgent`를 안 쓰고 MEAI `IChatClient`만 조립해도 같은 툴 루프를 얻는다.
+  MAF가 더하는 것은 세션/승인/워크플로우 계층
+- 루프 개입 지점: LangGraph는 state 검사 + `tool_choice` 강제(코드 수준 보장),
+  MAF는 Middleware에서 `ChatOptions` 조작 (동일 목적의 다른 레이어)
+
+---
+
+## v0.3 예정 (Week 3+)
+
+- [ ] MCP 툴 연결: `langchain-mcp-adapters` ↔ MAF 네이티브 MCP
+- [ ] Workflow 자체 checkpoint (`CheckpointWithHumanInTheLoop` 샘플 존재 확인)와
+      AgentSession 직렬화의 관계 — Week 6 착수 시 검증
+- [ ] 관측: LangSmith ↔ OpenTelemetry
