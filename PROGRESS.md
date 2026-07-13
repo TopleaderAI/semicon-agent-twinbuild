@@ -120,3 +120,43 @@
         MAF **Workflow** 첫 대면 (착수 시 Workflow API 공식 문서/태그 소스 검증 선행)
   - [ ] 매핑 문서 v0.2 작성: 상태 지속 / HITL / 분기 + 위 발견 반영
         (§5 표의 "AgentThread" 표기도 AgentSession으로 수정)
+### 2026-07-13 (Week 2 — 조건부 분기 3-way + 매핑 문서 v0.2, Week 2 DoD 최종 충족)
+
+- **완료**:
+  - `langgraph/branch_agent.py`: 커스텀 상태 필드(`strength`) + `add_conditional_edges`
+    3-way 라우팅. 판정은 프롬프트 JSON 강제 + 방어적 파싱, 미인식 값은 medium으로
+    (MAF `WithDefault` 대응). 1회차 E2E 성공 (strength=strong 라우팅 확인)
+  - `maf/BranchAgent`: Workflow 첫 대면 — `WorkflowBuilder.AddSwitch/AddCase/WithDefault`,
+    `Executor<TIn, TOut>` 타입드 노드, `InProcessExecution.RunStreamingAsync` 이벤트 스트림.
+    1회차 E2E 성공 (동일 판정, 동일 라우팅)
+  - 매핑 문서 **v0.2 완성**: §5 상태 지속, §6 HITL, §7 조건부 분기 + §3.3 1.0 GA
+    리네임 표 + §8 툴 루프 실소유자(FunctionInvokingChatClient) 정밀화
+  - `PROJECT_KNOWLEDGE.md` §5 표 정합화 (AgentThread → AgentSession 등)
+  - **Week 2 DoD 최종 충족**: 승인 플로우 양쪽 동작 ✅ + 매핑 문서 3개 섹션 ✅
+- **결정**:
+  - 분기 판정은 structured output(`ForJsonSchema<T>`, 공식 샘플 방식) 대신
+    **프롬프트 JSON 강제 + 파싱 실패 시 default 분기**로 양쪽 통일 —
+    OpenRouter/deepseek의 json_schema strict 미보장 + else ↔ WithDefault 대칭 확보
+  - `Microsoft.Agents.AI.Workflows` 1.13.0이 **stable** 패키지임을 NuGet에서 확인
+    → §7 안정성 경계 안에서 코어 의존 허용 (커넥터처럼 격리 불필요)
+  - 분기 미니 실험에서 툴 루프 배제 (mock 뉴스 직접 주입) — deepseek 툴 호출
+    비일관성 변수를 라우팅 실험에서 격리
+- **발견 (매핑 문서 v0.2 반영 완료)**:
+  - 라우터 입력 비대칭: LangGraph 라우터는 누적 state, MAF 조건은 직전 executor의
+    반환 메시지(typed). MAF 상태 공유는 `QueueStateUpdateAsync`/`ReadStateAsync` opt-in
+  - default 분기 위치: LangGraph는 라우터 else(코드 컨벤션), MAF는 `WithDefault`
+    (빌더 API가 구조적으로 강제 — 빠뜨린 분기를 타입 수준에서 차단)
+  - deepseek 실측: 프롬프트 JSON 강제 경로는 양쪽 스택 모두 1회차 유효 JSON —
+    툴 호출 비일관성과 대비되는 경향 (n 작음, 관찰 지속)
+  - Workflow 계층에 자체 checkpoint 존재 (`CheckpointWithHumanInTheLoop` 샘플) —
+    AgentSession 직렬화와의 관계는 Week 6 착수 시 검증 (v0.3 예정 항목)
+- **백로그** (carry-over):
+  - LlmFactory provider/model 네임스페이스 가드 (양쪽 대칭 적용)
+  - Anthropic Console Usage 크레딧 소진 원인 확인 + 필요 시 키 로테이션
+  - `git log -p --all | Select-String "sk-ant"` 로컬 전체 이력 크레덴셜 노출 점검
+- **다음 할 일 (Week 3 착수)**:
+  - [ ] MCP 서버 스캐폴드 (Python, FastMCP 또는 공식 SDK): 뉴스 검색 / 공시 조회 /
+        가격 데이터 / 지표 계산 4툴 — 착수 시 MCP SDK 현재 버전 검증 선행
+  - [ ] 기존 HBM 모니터링 로직(capex, CXMT 뉴스 빈도, 가격 역전비) MCP 툴 이식
+  - [ ] LangGraph에서 `langchain-mcp-adapters`로 툴 연결
+  - [ ] Data Collector 에이전트 완성
